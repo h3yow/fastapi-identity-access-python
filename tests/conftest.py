@@ -10,6 +10,24 @@ from app.tokens import TokenService
 MFA_SECRET = "alice-mfa-secret"
 
 
+class FakeClock:
+    """可控时钟：驱动续期的撞车窗口判定，测试可精确越过窗口制造复现场景。"""
+
+    def __init__(self) -> None:
+        self.now = 1_000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+@pytest.fixture()
+def fake_clock() -> FakeClock:
+    return FakeClock()
+
+
 @pytest.fixture()
 def store() -> Store:
     s = Store()

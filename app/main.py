@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from app.audit import AuditLog
 from app.auth import AuthService, LoginError, RefreshError, hash_password
 from app.authz import AuthzService
-from app.models import Resource, Role, User
+from app.models import RefreshFailureReason, Resource, Role, User
 from app.store import Store
 from app.tokens import TokenService
 
@@ -47,6 +47,7 @@ class AuthorizeRequest(BaseModel):
     access_token: str | None = None
     permission: str
     resource_id: str
+    request_id: str | None = None  # 幂等键：同一请求的重复投递只记一次账
 
 
 @app.post("/login")
@@ -62,7 +63,9 @@ def refresh(req: RefreshRequest) -> dict:
     try:
         return auth.refresh(req.refresh_token)
     except RefreshError as exc:
-        raise HTTPException(status_code=401, detail=exc.reason.value) from exc
+        # 并发撞车是可重试的临时冲突 -> 409；其余（含复用）-> 401
+        status = (409 if exc.reason == RefreshFailureReason.CONCURRENT_CONFLICT else 401)
+        raise HTTPException(status_code=status, detail=exc.reason.value) from exc
 
 
 @app.post("/logout/{session_id}")
@@ -73,7 +76,8 @@ def logout(session_id: str) -> dict:
 
 @app.post("/authorize")
 def authorize(req: AuthorizeRequest) -> dict:
-    return {"decision": authz.authorize(req.access_token, req.permission, req.resource_id).value}
+    return {"decision": authz.authorize(req.access_token, req.permission,
+                                        req.resource_id, req.request_id).value}
 
 
 @app.post("/admin/users/{user_id}/disable")
@@ -86,6 +90,16 @@ def disable_user(user_id: str) -> dict:
 def set_roles(user_id: str, roles: list[str]) -> dict:
     auth.set_roles(user_id, set(roles))
     return {"status": "roles_updated"}
+
+
+@app.post("/admin/roles/{role_name}/permissions")
+def set_role_permissions(role_name: str, permissions: list[str]) -> dict:
+    """调整角色本身的权限集合：持有该角色的用户旧凭据立即失效。"""
+    try:
+        auth.set_role_permissions(role_name, set(permissions))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="role_not_found") from None
+    return {"status": "role_permissions_updated"}
 
 
 @app.get("/audit")

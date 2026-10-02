@@ -29,12 +29,12 @@ def test_login_disabled_account(auth: AuthService):
 def test_refresh_rotation_single_use(auth: AuthService, logged_in: dict):
     pair2 = auth.refresh(logged_in["refresh_token"])
     assert pair2["refresh_token"] != logged_in["refresh_token"]
-    # 旧 refresh token 重放 -> session_reused
+    # 旧 refresh token 在冲突窗口内被重复提交 -> 可重试的并发撞车
     with pytest.raises(RefreshError) as exc_info:
         auth.refresh(logged_in["refresh_token"])
-    print(f"replay old refresh_token -> {exc_info.value.reason.value}")
-    assert exc_info.value.reason.value == "session_reused"
-    # 新 token 可用
+    print(f"immediate re-submit of consumed refresh_token -> {exc_info.value.reason.value}")
+    assert exc_info.value.reason.value == "concurrent_conflict"
+    # 撞车不杀伤会话：新 token 仍可用
     auth.refresh(pair2["refresh_token"])
 
 

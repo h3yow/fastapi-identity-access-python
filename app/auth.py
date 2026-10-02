@@ -1,7 +1,14 @@
 """认证服务：多因素登录、会话续期（单次使用轮换）、登出与账号禁用。
 
 并发一致性：会话轮换的"校验旧 jti + 作废 + 写入新 jti"在 store 锁内原子完成，
-因此并发续期最多只有一个成功；重放已消费的 jti 会得到 SESSION_REUSED。
+因此并发续期最多只有一个成功。
+
+续期失败细分：
+- 并发撞车（CONCURRENT_CONFLICT）：提交的 jti 在冲突窗口内刚被另一个在途请求
+  消费，属于可重试的临时冲突，会话不受影响；
+- 复用（SESSION_REUSED）：jti 早已被消费（超出冲突窗口）或来路不明，按安全事件
+  处理——一经判定，该会话立即永久作废，之后不得再签出任何新凭据，
+  绝不出现两个都还能用的会话。
 """
 from __future__ import annotations
 
@@ -10,13 +17,15 @@ import hmac
 import struct
 import time
 import uuid
+from collections.abc import Callable
 
-from app.models import LoginFailureReason, RefreshFailureReason, Session
+from app.models import LoginFailureReason, RefreshFailureReason, Role, Session
 from app.store import Store
 from app.tokens import TokenError, TokenService
 
 ACCESS_TOKEN_TTL = 300.0  # 短期访问凭据：5 分钟
 REFRESH_TOKEN_TTL = 7 * 24 * 3600.0  # 长期会话：7 天
+DEFAULT_CONFLICT_WINDOW = 2.0  # 并发撞车判定窗口（秒）：窗口内的重复提交视为撞车
 
 
 def hash_password(password: str, salt: str) -> str:
@@ -45,9 +54,13 @@ class RefreshError(Exception):
 
 
 class AuthService:
-    def __init__(self, store: Store, tokens: TokenService) -> None:
+    def __init__(self, store: Store, tokens: TokenService,
+                 conflict_window: float = DEFAULT_CONFLICT_WINDOW,
+                 clock: Callable[[], float] = time.time) -> None:
         self._store = store
         self._tokens = tokens
+        self._conflict_window = conflict_window
+        self._clock = clock
 
     def _issue_pair(self, session: Session, token_version: int) -> dict:
         jti = uuid.uuid4().hex
@@ -109,12 +122,19 @@ class AuthService:
             if user.disabled:
                 raise RefreshError(RefreshFailureReason.ACCOUNT_DISABLED)
             # 单次使用语义：jti 必须是会话当前唯一有效的，且从未被消费过。
-            if jti != session.current_refresh_id or jti in store.used_refresh_ids:
-                raise RefreshError(RefreshFailureReason.SESSION_REUSED)
-            store.used_refresh_ids.add(jti)  # 作废旧 jti
-            # 权限快照随续期刷新：角色调整后的新凭据携带新 token_version。
-            session.token_version = user.token_version
-            return self._issue_pair(session, user.token_version)
+            consumed_at = store.used_refresh_ids.get(jti)
+            if jti == session.current_refresh_id and consumed_at is None:
+                store.used_refresh_ids[jti] = self._clock()  # 作废旧 jti
+                # 权限快照随续期刷新：角色调整后的新凭据携带新 token_version。
+                session.token_version = user.token_version
+                return self._issue_pair(session, user.token_version)
+            if consumed_at is not None and self._clock() - consumed_at <= self._conflict_window:
+                # 冲突窗口内的重复提交：另一个在途请求刚消费了它，可重试的撞车。
+                raise RefreshError(RefreshFailureReason.CONCURRENT_CONFLICT)
+            # 复用：jti 早已被消费或来路不明。按安全事件处理：会话永久作废，
+            # 之后不得再签出任何新凭据（含当前仍有效的 refresh token）。
+            session.revoked = True
+            raise RefreshError(RefreshFailureReason.SESSION_REUSED)
 
     def logout(self, session_id: str) -> None:
         with self._store.lock:
@@ -138,3 +158,18 @@ class AuthService:
             user = self._store.users[user_id]
             user.roles = set(roles)
             user.token_version += 1
+
+    def set_role_permissions(self, role_name: str, permissions: set[str]) -> None:
+        """调整角色本身的权限集合（用户角色不变）。
+
+        持有该角色的所有用户 token_version 递增：旧访问凭据立即失效——
+        权限被收窄后旧凭据不能继续放行已拿掉的权限；权限被放开后旧凭据也不会
+        静默获得新权限，必须续期拿到更新后的判定依据才生效。
+        """
+        with self._store.lock:
+            if role_name not in self._store.roles:
+                raise KeyError(role_name)
+            self._store.roles[role_name] = Role(role_name, frozenset(permissions))
+            for user in self._store.users.values():
+                if role_name in user.roles:
+                    user.token_version += 1

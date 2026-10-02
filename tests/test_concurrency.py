@@ -34,7 +34,8 @@ def test_concurrent_refresh_exactly_one_winner(auth: AuthService, logged_in: dic
     counts = Counter(outcomes)
     print(f"concurrent refresh x{THREADS} on same token -> {dict(counts)}")
     assert counts["success"] == 1, "并发续期不得产生两个同时有效的会话"
-    assert counts["session_reused"] == THREADS - 1
+    # 落败方在冲突窗口内提交刚被消费的 jti -> 可重试的撞车，而非复用
+    assert counts["concurrent_conflict"] == THREADS - 1
 
 
 def test_concurrent_authorize_consistent_and_single_audit(
@@ -102,4 +103,5 @@ def test_concurrent_refresh_and_revoke(auth: AuthService, logged_in: dict, token
         auth.refresh(token)
         raise AssertionError("重放必须失败")
     except RefreshError as exc:
-        assert exc.reason.value in ("session_reused", "session_revoked")
+        # 续期方赢：旧 jti 刚被消费 -> 撞车；撤销方赢：会话已撤销
+        assert exc.reason.value in ("concurrent_conflict", "session_revoked")

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import threading
 
-from app.models import Resource, Role, Session, User
+from app.models import AuthzDecision, Resource, Role, Session, User
 
 
 class Store:
@@ -16,7 +16,10 @@ class Store:
         self.sessions: dict[str, Session] = {}
         self.resources: dict[str, Resource] = {}
         self.audit_log: list[dict] = []
-        self.used_refresh_ids: set[str] = set()  # 已消费的 refresh token jti（重放检测）
+        # 已消费的 refresh token jti -> 消费时间戳（用于区分并发撞车与重放复用）
+        self.used_refresh_ids: dict[str, float] = {}
+        # 幂等授权：caller 作用域 + request_id -> 首次判定结论（重试不再重复记账）
+        self.completed_authz: dict[str, AuthzDecision] = {}
 
     @property
     def lock(self) -> threading.RLock:

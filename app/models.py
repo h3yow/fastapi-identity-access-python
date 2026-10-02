@@ -20,7 +20,11 @@ class RefreshFailureReason(enum.Enum):
     TOKEN_MALFORMED = "token_malformed"
     TOKEN_EXPIRED = "token_expired"
     SESSION_NOT_FOUND = "session_not_found"
-    SESSION_REUSED = "session_reused"  # 单次使用语义：旧 refresh token 重放
+    # 并发撞车：jti 刚被另一个在途请求消费（冲突窗口内），可重试的临时冲突
+    CONCURRENT_CONFLICT = "concurrent_conflict"
+    # 复用：jti 早已被消费（超出冲突窗口）或来路不明，按安全事件处理，
+    # 一经判定，该会话永久作废，不得再签出任何新凭据
+    SESSION_REUSED = "session_reused"
     SESSION_REVOKED = "session_revoked"
     ACCOUNT_DISABLED = "account_disabled"
 
