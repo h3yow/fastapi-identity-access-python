@@ -10,6 +10,24 @@ from app.tokens import TokenService
 MFA_SECRET = "alice-mfa-secret"
 
 
+class FakeClock:
+    """可手动推进的时钟，用于确定性地测试撞车宽限窗口。"""
+
+    def __init__(self, start: float = 1_000_000.0) -> None:
+        self.now = start
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+@pytest.fixture()
+def clock() -> FakeClock:
+    return FakeClock()
+
+
 @pytest.fixture()
 def store() -> Store:
     s = Store()
@@ -32,8 +50,8 @@ def tokens() -> TokenService:
 
 
 @pytest.fixture()
-def auth(store: Store, tokens: TokenService) -> AuthService:
-    return AuthService(store, tokens)
+def auth(store: Store, tokens: TokenService, clock: FakeClock) -> AuthService:
+    return AuthService(store, tokens, rotation_leeway=2.0, clock=clock)
 
 
 @pytest.fixture()

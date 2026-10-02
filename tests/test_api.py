@@ -47,7 +47,7 @@ def test_end_to_end_flow():
     print(f"after refresh, alice read doc-secret -> {r.json()}")
     assert r.json()["decision"] == "allowed"
 
-    # 旧 refresh token 重放
+    # 旧 refresh token 在宽限窗口内再次提交：可重试的并发冲突（409）
     r = client.post("/refresh", json={"refresh_token": pair["refresh_token"]})
-    print(f"replay old refresh -> {r.status_code} {r.json()}")
-    assert r.status_code == 401 and r.json()["detail"] == "session_reused"
+    print(f"re-submit old refresh -> {r.status_code} {r.json()}")
+    assert r.status_code == 409 and r.json()["detail"] == "refresh_conflict"

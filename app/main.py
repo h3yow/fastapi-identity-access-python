@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from app.audit import AuditLog
 from app.auth import AuthService, LoginError, RefreshError, hash_password
 from app.authz import AuthzService
-from app.models import Resource, Role, User
+from app.models import RefreshFailureReason, Resource, Role, User
 from app.store import Store
 from app.tokens import TokenService
 
@@ -62,7 +62,9 @@ def refresh(req: RefreshRequest) -> dict:
     try:
         return auth.refresh(req.refresh_token)
     except RefreshError as exc:
-        raise HTTPException(status_code=401, detail=exc.reason.value) from exc
+        # 并发撞车落败方：409 表示可安全重试；其余为 401。
+        status = 409 if exc.reason is RefreshFailureReason.REFRESH_CONFLICT else 401
+        raise HTTPException(status_code=status, detail=exc.reason.value) from exc
 
 
 @app.post("/logout/{session_id}")

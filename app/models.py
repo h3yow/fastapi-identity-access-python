@@ -20,7 +20,8 @@ class RefreshFailureReason(enum.Enum):
     TOKEN_MALFORMED = "token_malformed"
     TOKEN_EXPIRED = "token_expired"
     SESSION_NOT_FOUND = "session_not_found"
-    SESSION_REUSED = "session_reused"  # 单次使用语义：旧 refresh token 重放
+    REFRESH_CONFLICT = "refresh_conflict"  # 并发撞车的落败方：可安全重试
+    SESSION_REUSED = "session_reused"  # 单次使用语义：旧 refresh token 重放（安全事件）
     SESSION_REVOKED = "session_revoked"
     ACCOUNT_DISABLED = "account_disabled"
 
@@ -59,6 +60,8 @@ class Session:
     token_version: int  # 签发会话时的用户 token_version 快照
     expires_at: float
     revoked: bool = False
+    last_consumed_jti: str = ""  # 最近一次轮换消费掉的 jti（并发撞车判定用）
+    last_consumed_at: float = 0.0  # 该次轮换发生的时间
 
 
 @dataclass(frozen=True)

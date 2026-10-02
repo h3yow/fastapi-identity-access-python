@@ -1,7 +1,10 @@
 """认证服务：多因素登录、会话续期（单次使用轮换）、登出与账号禁用。
 
 并发一致性：会话轮换的"校验旧 jti + 作废 + 写入新 jti"在 store 锁内原子完成，
-因此并发续期最多只有一个成功；重放已消费的 jti 会得到 SESSION_REUSED。
+因此并发续期最多只有一个成功。失败原因细分：
+- 落败方在宽限窗口内持刚被消费的旧 jti 到达 → REFRESH_CONFLICT（可安全重试）；
+- 宽限窗口外重放已消费的 jti → SESSION_REUSED（安全事件），会话立即终止，
+  之后不得再签出任何新凭据。
 """
 from __future__ import annotations
 
@@ -10,6 +13,7 @@ import hmac
 import struct
 import time
 import uuid
+from collections.abc import Callable
 
 from app.models import LoginFailureReason, RefreshFailureReason, Role, Session
 from app.store import Store
@@ -45,9 +49,14 @@ class RefreshError(Exception):
 
 
 class AuthService:
-    def __init__(self, store: Store, tokens: TokenService) -> None:
+    def __init__(self, store: Store, tokens: TokenService,
+                 rotation_leeway: float = 2.0, clock: Callable[[], float] = time.time) -> None:
         self._store = store
         self._tokens = tokens
+        # 撞车宽限窗口：上一次轮换发生后这么短的时间内，旧 jti 再次被提交，
+        # 视为"几乎同时续期"的并发落败方（可重试），而非凭据重放。
+        self._rotation_leeway = rotation_leeway
+        self._clock = clock
 
     def _issue_pair(self, session: Session, token_version: int) -> dict:
         jti = uuid.uuid4().hex
@@ -109,13 +118,30 @@ class AuthService:
             user = store.users[session.user_id]
             if user.disabled:
                 raise RefreshError(RefreshFailureReason.ACCOUNT_DISABLED)
-            # 单次使用语义：jti 必须是会话当前唯一有效的，且从未被消费过。
-            if jti != session.current_refresh_id or jti in store.used_refresh_ids:
+            # 单次使用语义：按 jti 状态分三种情况，失败原因必须可区分。
+            now = self._clock()
+            if jti == session.current_refresh_id and jti not in store.used_refresh_ids:
+                # 正常轮换：作废旧 jti，记录本次轮换（供撞车判定），签发新凭据对。
+                store.used_refresh_ids.add(jti)
+                session.last_consumed_jti = jti
+                session.last_consumed_at = now
+                # 权限快照随续期刷新：角色调整后的新凭据携带新 token_version。
+                session.token_version = user.token_version
+                return self._issue_pair(session, user.token_version)
+            if jti in store.used_refresh_ids:
+                if (jti == session.last_consumed_jti
+                        and now - session.last_consumed_at <= self._rotation_leeway):
+                    # 上一次轮换后宽限窗口内再次提交同一旧凭据：
+                    # 并发撞车的落败方（或在途重试），可安全重试，会话不受影响。
+                    raise RefreshError(RefreshFailureReason.REFRESH_CONFLICT)
+                # 宽限窗口之外重放已消费凭据：按安全事件处理。
+                # 会话立即终止——之后不得再签出任何新凭据，
+                # 绝不出现重放方与持方两个都还能用的会话。
+                session.revoked = True
                 raise RefreshError(RefreshFailureReason.SESSION_REUSED)
-            store.used_refresh_ids.add(jti)  # 作废旧 jti
-            # 权限快照随续期刷新：角色调整后的新凭据携带新 token_version。
-            session.token_version = user.token_version
-            return self._issue_pair(session, user.token_version)
+            # 签名有效但从未签发过的 jti：异常凭据，按复用处理并终止会话。
+            session.revoked = True
+            raise RefreshError(RefreshFailureReason.SESSION_REUSED)
 
     def logout(self, session_id: str) -> None:
         with self._store.lock:
