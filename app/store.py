@@ -20,6 +20,9 @@ class Store:
         # 角色权限集合的全局版本：任何角色的权限被修改即递增，
         # 使按旧权限集合签发的访问凭据立即失效（无论收窄还是放开）。
         self.policy_version: int = 0
+        # 授权幂等：request_id -> {"decision", "fingerprint"}，
+        # 同一请求的重复投递（含并发重发）返回首次判定结论且只记一次账。
+        self.authz_results: dict[str, dict] = {}
 
     @property
     def lock(self) -> threading.RLock:

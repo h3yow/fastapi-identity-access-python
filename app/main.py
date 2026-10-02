@@ -47,6 +47,7 @@ class AuthorizeRequest(BaseModel):
     access_token: str | None = None
     permission: str
     resource_id: str
+    request_id: str | None = None  # 幂等键：同一请求的重复投递只记一次账
 
 
 @app.post("/login")
@@ -75,7 +76,12 @@ def logout(session_id: str) -> dict:
 
 @app.post("/authorize")
 def authorize(req: AuthorizeRequest) -> dict:
-    return {"decision": authz.authorize(req.access_token, req.permission, req.resource_id).value}
+    try:
+        decision = authz.authorize(req.access_token, req.permission, req.resource_id,
+                                   request_id=req.request_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"decision": decision.value}
 
 
 @app.post("/admin/users/{user_id}/disable")
