@@ -88,6 +88,12 @@ def set_roles(user_id: str, roles: list[str]) -> dict:
     return {"status": "roles_updated"}
 
 
+@app.post("/admin/roles/{role_name}/permissions")
+def set_role_permissions(role_name: str, permissions: list[str]) -> dict:
+    auth.set_role_permissions(role_name, set(permissions))
+    return {"status": "role_permissions_updated"}
+
+
 @app.get("/audit")
 def audit() -> list[dict]:
     return list(store.audit_log)

@@ -11,7 +11,7 @@ import struct
 import time
 import uuid
 
-from app.models import LoginFailureReason, RefreshFailureReason, Session
+from app.models import LoginFailureReason, RefreshFailureReason, Role, Session
 from app.store import Store
 from app.tokens import TokenError, TokenService
 
@@ -54,7 +54,8 @@ class AuthService:
         session.current_refresh_id = jti
         return {
             "access_token": self._tokens.issue_access_token(
-                session.user_id, session.session_id, token_version, ACCESS_TOKEN_TTL
+                session.user_id, session.session_id, token_version,
+                self._store.policy_version, ACCESS_TOKEN_TTL
             ),
             "refresh_token": self._tokens.issue_refresh_token(
                 session.session_id, jti, session.expires_at - time.time()
@@ -138,3 +139,15 @@ class AuthService:
             user = self._store.users[user_id]
             user.roles = set(roles)
             user.token_version += 1
+
+    def set_role_permissions(self, role_name: str, permissions: set[str]) -> None:
+        """修改角色本身的权限集合：递增全局 policy_version。
+
+        用户持有的角色不变，但判定依据已变：按旧权限集合签发的访问凭据
+        立即失效——收窄后不得继续放行已移除的权限，放开后也不得静默
+        获得新权限，必须续期拿到携带新 policy_version 的凭据。
+        """
+        with self._store.lock:
+            role = self._store.roles[role_name]
+            self._store.roles[role_name] = Role(role.name, frozenset(permissions))
+            self._store.policy_version += 1

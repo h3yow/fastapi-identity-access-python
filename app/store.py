@@ -17,6 +17,9 @@ class Store:
         self.resources: dict[str, Resource] = {}
         self.audit_log: list[dict] = []
         self.used_refresh_ids: set[str] = set()  # 已消费的 refresh token jti（重放检测）
+        # 角色权限集合的全局版本：任何角色的权限被修改即递增，
+        # 使按旧权限集合签发的访问凭据立即失效（无论收窄还是放开）。
+        self.policy_version: int = 0
 
     @property
     def lock(self) -> threading.RLock:

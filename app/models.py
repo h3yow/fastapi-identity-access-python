@@ -67,6 +67,7 @@ class AccessTokenClaims:
     user_id: str
     session_id: str
     token_version: int
+    policy_version: int  # 签发时的角色权限集合版本快照
     expires_at: float
 
 

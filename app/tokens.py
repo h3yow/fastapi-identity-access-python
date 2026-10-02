@@ -1,7 +1,7 @@
 """凭据签发与校验：HMAC 签名的短期访问凭据与可轮换刷新凭据。
 
 凭据格式：base64url(payload_json).base64url(hmac_sha256)
-- 访问凭据 payload: {"typ": "access", "jti", "sub", "sid", "ver", "exp"}
+- 访问凭据 payload: {"typ": "access", "jti", "sub", "sid", "ver", "pver", "exp"}
 - 刷新凭据 payload: {"typ": "refresh", "jti", "sid", "exp"}
 """
 from __future__ import annotations
@@ -58,13 +58,15 @@ class TokenService:
             raise TokenError("expired")
         return payload
 
-    def issue_access_token(self, user_id: str, session_id: str, token_version: int, ttl: float) -> str:
+    def issue_access_token(self, user_id: str, session_id: str, token_version: int,
+                           policy_version: int, ttl: float) -> str:
         return self._issue({
             "typ": "access",
             "jti": uuid.uuid4().hex,
             "sub": user_id,
             "sid": session_id,
             "ver": token_version,
+            "pver": policy_version,
             "exp": time.time() + ttl,
         })
 
@@ -83,6 +85,7 @@ class TokenService:
             user_id=payload["sub"],
             session_id=payload["sid"],
             token_version=int(payload["ver"]),
+            policy_version=int(payload["pver"]),
             expires_at=float(payload["exp"]),
         )
 

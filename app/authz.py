@@ -46,6 +46,11 @@ class AuthzService:
                 # 权限/角色已变更：旧凭据立即失效，绝不静默放行旧权限。
                 return self._deny(AuthzDecision.UNAUTHENTICATED, permission, resource_id,
                                   user_id=user.user_id, reason="stale_token_version")
+            if claims.policy_version != store.policy_version:
+                # 角色权限集合已变更（用户角色未变）：旧凭据同样立即失效，
+                # 收窄不放行旧权限、放开不静默给新权限，续期后才按新集合判定。
+                return self._deny(AuthzDecision.UNAUTHENTICATED, permission, resource_id,
+                                  user_id=user.user_id, reason="stale_policy_version")
 
             # 2. 资源存在性
             resource = store.resources.get(resource_id)
